@@ -1,5 +1,11 @@
 # Safe Multisig Transaction Hashes <!-- omit from toc -->
 
+### Quick Start
+Fill out the tx.json with transaction information and run this command.
+```
+./safe_hashes.sh --json tx.json`
+```
+
 [![License: AGPL-3.0-only](https://img.shields.io/badge/License-AGPL--3.0--only-blue)](https://www.gnu.org/licenses/agpl-3.0)
 
 ```console

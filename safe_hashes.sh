@@ -134,20 +134,42 @@ usage() {
 Usage: $0 [--help] [--list-networks]
        --network <network> --address <address> --nonce <nonce>
        --message <file>
+       --json <file>
 
 Options:
   --help              Display this help message
   --list-networks     List all supported networks and their chain IDs
-  --network <network> Specify the network (required)
-  --address <address> Specify the Safe multisig address (required)
-  --nonce <nonce>     Specify the transaction nonce (required for transaction hashes)
+  --network <network> Specify the network (required for API lookup)
+  --address <address> Specify the Safe multisig address (required for API lookup)
+  --nonce <nonce>     Specify the transaction nonce (required for API lookup)
   --message <file>    Specify the message file (required for off-chain message hashes)
+  --json <file>       Specify a JSON file containing transaction details
 
-Example for transaction hashes:
+Example for transaction hashes via API:
   $0 --network ethereum --address 0x1234...5678 --nonce 42
 
 Example for off-chain message hashes:
   $0 --network ethereum --address 0x1234...5678 --message message.txt
+
+Example for transaction hashes via JSON:
+  $0 --json transaction.json
+
+JSON file format example:
+{
+  "to": "0x1234...5678",
+  "value": "1000000000000000000",
+  "data": "0x",
+  "operation": "0",
+  "safeTxGas": "0",
+  "baseGas": "0",
+  "gasPrice": "0",
+  "gasToken": "0x0000000000000000000000000000000000000000",
+  "refundReceiver": "0x0000000000000000000000000000000000000000",
+  "nonce": "42",
+  "chainId": "1",
+  "address": "0x9876...4321",
+  "version": "1.3.0"
+}
 EOF
     exit "${1:-1}"
 }
@@ -275,18 +297,18 @@ get_version() {
 # Utility function to validate the Safe multisig version.
 validate_version() {
     local version=$1
-    if [[ -z "$version" ]]; then
-        echo "$(tput setaf 3)No Safe multisig contract found for the specified network. Please ensure that you have selected the correct network.$(tput setaf 0)"
-        exit 0
-    fi
+    # if [[ -z "$version" ]]; then
+    #     echo "$(tput setaf 3)No Safe multisig contract found for the specified network. Please ensure that you have selected the correct network.$(tput setaf 0)"
+    #     exit 0
+    # fi
 
     local clean_version=$(get_version "$version")
 
     # Ensure that the Safe multisig version is `>= 0.1.0`.
-    if [[ "$(printf "%s\n%s" "$clean_version" "0.1.0" | sort -V | head -n1)" == "$clean_version" && "$clean_version" != "0.1.0" ]]; then
-        echo "$(tput setaf 3)Safe multisig version \"${clean_version}\" is not supported!$(tput setaf 0)"
-        exit 0
-    fi
+    # if [[ "$(printf "%s\n%s" "$clean_version" "0.1.0" | sort -V | head -n1)" == "$clean_version" && "$clean_version" != "0.1.0" ]]; then
+    #     echo "$(tput setaf 3)Safe multisig version \"${clean_version}\" is not supported!$(tput setaf 0)"
+    #     exit 0
+    # fi
 }
 
 # Utility function to calculate the domain hash.
@@ -313,6 +335,35 @@ calculate_domain_hash() {
     echo "$domain_hash"
 }
 
+# Utility function to print debug data
+print_debug_data() {
+    local to=$1
+    local value=$2
+    local data=$3
+    local operation=$4
+    local safe_tx_gas=$5
+    local base_gas=$6
+    local gas_price=$7
+    local gas_token=$8
+    local refund_receiver=$9
+    local nonce=${10}
+    local data_decoded=${11}
+
+    echo "================Debug Data==============="
+    echo "to: $to"
+    echo "value: $value"
+    echo "data: $data"
+    echo "operation: $operation" 
+    echo "safeTxGas: $safe_tx_gas"
+    echo "baseGas: $base_gas"
+    echo "gasPrice: $gas_price"
+    echo "gasToken: $gas_token"
+    echo "refundReceiver: $refund_receiver"
+    echo "nonce: $nonce"
+    echo "data_decoded: $data_decoded"
+    echo "======================================"
+}
+
 # Utility function to calculate the domain and message hashes.
 calculate_hashes() {
     local chain_id=$1
@@ -329,6 +380,10 @@ calculate_hashes() {
     local nonce=${12}
     local data_decoded=${13}
     local version=${14}
+
+    # Add debug output at start of function
+    print_debug_data "$to" "$value" "$data" "$operation" "$safe_tx_gas" "$base_gas" \
+        "$gas_price" "$gas_token" "$refund_receiver" "$nonce" "$data_decoded"
 
     local domain_separator_typehash="$DOMAIN_SEPARATOR_TYPEHASH"
     local domain_hash_args="$domain_separator_typehash, $chain_id, $address"
@@ -368,6 +423,10 @@ calculate_hashes() {
         "$refund_receiver" \
         "$nonce")
 
+    echo "================Message==============="
+    echo "message: $message"
+    echo "======================================"
+
     # Calculate the message hash.
     local message_hash=$(cast keccak "$message")
 
@@ -388,7 +447,7 @@ validate_network() {
     local network="$1"
     if [[ -z "${API_URLS[$network]:-}" || -z "${CHAIN_IDS[$network]:-}" ]]; then
         echo -e "${BOLD}${RED}Invalid network name: \"${network}\"${RESET}\n" >&2
-        calculate_safe_tx_hashes --list-networks >&2
+        calculate_safe_hashes --list-networks >&2
         exit 1
     fi
 }
@@ -489,6 +548,49 @@ calculate_offchain_message_hashes() {
     print_field "Safe message hash" "$safe_msg_hash"
 }
 
+# Utility function to calculate message hash from JSON input
+calculate_hash_from_json() {
+    local json_file=$1
+    
+    # Read required fields from JSON
+    local to=$(jq -r '.to // "0x0000000000000000000000000000000000000000"' "$json_file")
+    local value=$(jq -r '.value // "0"' "$json_file")
+    local data=$(jq -r '.data // "0x"' "$json_file")
+    local operation=$(jq -r '.operation // "0"' "$json_file")
+    local safeTxGas=$(jq -r '.safeTxGas // "0"' "$json_file")
+    local baseGas=$(jq -r '.baseGas // "0"' "$json_file")
+    local gasPrice=$(jq -r '.gasPrice // "0"' "$json_file")
+    local gasToken=$(jq -r '.gasToken // "0x0000000000000000000000000000000000000000"' "$json_file")
+    local refundReceiver=$(jq -r '.refundReceiver // "0x0000000000000000000000000000000000000000"' "$json_file")
+    local nonce=$(jq -r '.nonce // "0"' "$json_file")
+    local chainId=$(jq -r '.chainId // "1"' "$json_file")
+    local address=$(jq -r '.address // ""' "$json_file")
+    local version=$(jq -r '.version // "1.3.0"' "$json_file")
+    local data_decoded=$(jq -r '.dataDecoded // "0x"' "$json_file")
+
+    # Validate required fields
+    if [[ -z "$address" ]]; then
+        echo -e "${BOLD}${RED}Error: Safe address is required in JSON input${RESET}" >&2
+        exit 1
+    fi
+
+    # Calculate hashes using existing function
+    calculate_hashes "$chainId" \
+        "$address" \
+        "$to" \
+        "$value" \
+        "$data" \
+        "$operation" \
+        "$safeTxGas" \
+        "$baseGas" \
+        "$gasPrice" \
+        "$gasToken" \
+        "$refundReceiver" \
+        "$nonce" \
+        "$data_decoded" \
+        "$version"
+}
+
 # Safe Transaction/Message Hashes Calculator
 # This function orchestrates the entire process of calculating the Safe transaction/message hashes:
 # 1. Parses command-line arguments (`network`, `address`, `nonce`, `message`).
@@ -508,7 +610,7 @@ calculate_safe_hashes() {
         usage
     fi
 
-    local network="" address="" nonce="" message_file=""
+    local network="" address="" nonce="" message_file="" json_file=""
 
     # Parse the command line arguments.
     while [[ $# -gt 0 ]]; do
@@ -518,12 +620,25 @@ calculate_safe_hashes() {
             --address) address="$2"; shift 2 ;;
             --nonce) nonce="$2"; shift 2 ;;
             --message) message_file="$2"; shift 2 ;;
+            --json) json_file="$2"; shift 2 ;;
             --list-networks) list_networks ;;
             *) echo "Unknown option: $1" >&2; usage ;;
         esac
     done
 
-    # Validate if the required parameters have the correct format.
+    # Handle JSON input
+    if [[ -n "$json_file" ]]; then
+        if [[ ! -f "$json_file" ]]; then
+            echo -e "${BOLD}${RED}Error: JSON file not found: $json_file${RESET}" >&2
+            exit 1
+        fi
+        # When using JSON input, we don't need network/address/nonce validation
+        # as all required data comes from the JSON file
+        calculate_hash_from_json "$json_file"
+        exit 0
+    fi
+
+    # For non-JSON paths, continue with existing validation and API lookup...
     validate_network "$network"
     validate_address "$address"
 
@@ -604,8 +719,7 @@ EOF
     local gas_token=$(echo "$response" | jq -r ".results[$idx].gasToken // \"0x0000000000000000000000000000000000000000\"")
     local refund_receiver=$(echo "$response" | jq -r ".results[$idx].refundReceiver // \"0x0000000000000000000000000000000000000000\"")
     local nonce=$(echo "$response" | jq -r ".results[$idx].nonce // \"0\"")
-    local data_decoded=$(echo "$response" | jq -r ".results[$idx].dataDecoded // \"0x\"")
-
+    local data_decoded=$(echo "$response" | jq -r ".results[$idx].dataDecoded // \"0x\"") 
     # Calculate and display the hashes.
     echo "==================================="
     echo "= Selected Network Configurations ="
